@@ -60,12 +60,6 @@ import: aStream
             			ifTrue: [
                                   	lastEmpty := false.
                                   	result scanFrom: parser]]]
-!
-
-importString: aString
-| aStream |
-    aStream := StringStream on: aString.
-self import: aStream.
 ! !
 
 Object subclass: #Exporter
