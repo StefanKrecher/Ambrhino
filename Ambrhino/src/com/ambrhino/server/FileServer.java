@@ -9,11 +9,13 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLConnection;
+import java.util.ArrayList;
 
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.ContextFactory;
+import org.mozilla.javascript.ImporterTopLevel;
+import org.mozilla.javascript.JavaScriptException;
 import org.mozilla.javascript.ScriptableObject;
-
-
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -31,7 +33,13 @@ public class FileServer implements HttpHandler {
 		} else if (exchange.getRequestMethod().equals("PUT")) {
 			handlePUT(exchange);
 		} else if (exchange.getRequestMethod().equals("POST")) {
-			handlePOST(exchange);
+			try {
+				handlePOST(exchange);
+				respondOkTo(exchange);
+			} catch (Exception e) {
+				e.printStackTrace();
+				respondErrorTo(exchange);
+			}
 		}
 	}
 
@@ -41,21 +49,62 @@ public class FileServer implements HttpHandler {
 		is.read(data);
 		is.close();
 		String stringdata = new String(data);
-		if(stringdata.equals("reload")) {
-			
-		} 
+
+		String uri = exchange.getRequestURI().toASCIIString().replaceFirst("/", "");
+
+		if (uri.equals("reload")) {
+
+		} else if (uri.startsWith("createProgram")) {
+			String[] params = uri.split("\\?");
+			String main = params[1];
+			String targetFilename = params[2];
+
+			ArrayList<String> files = new ArrayList<String>();
+
+			String[] kernelFiles = new String[] { "boot", "Kernel-Objects", "Kernel-Classes", "Kernel-Methods",
+					"Kernel-Collections", "Kernel-Exceptions", "Kernel-Transcript", "parser", "Compiler" };
+
+			for (String filename : kernelFiles) {
+				files.add(filename);
+			}
+
+			for (String entry : stringdata.split("&")) {
+				files.add(entry.split("=")[1]);
+			}
+
+			files.add("init");
+
+			FileOutputStream fos = new FileOutputStream(targetFilename + ".js");
+
+			for (String filename : files) {
+				writeProgram(fos, filename);
+			}
+
+			fos.write(("smalltalk." + main + "._main()").getBytes());
+			fos.close();
+		}
+	}
+
+	private void writeProgram(FileOutputStream fos, String filename) throws FileNotFoundException, IOException {
+		byte[] data;
+		FileInputStream fis = new FileInputStream("js/" + filename + ".js");
+		data = new byte[fis.available()];
+		fis.read(data);
+		fis.close();
+
+		fos.write(data);
 	}
 
 	private void handlePUT(HttpExchange exchange) throws IOException {
 		try {
 			String fileName = exchange.getRequestURI().toASCIIString().replaceFirst("/", "");
-			
+
 			InputStream is = exchange.getRequestBody();
 			byte[] data = new byte[is.available()];
 			is.read(data);
 			is.close();
 			String stringdata = new String(data);
-			
+
 			FileOutputStream fos = new FileOutputStream(fileName);
 			fos.write(stringdata.getBytes());
 			fos.flush();
@@ -102,13 +151,16 @@ public class FileServer implements HttpHandler {
 		String response = "404 - not found";
 		writeResponse(exchange, 404, "text/plain", response.getBytes());
 	}
+
 	private void respondErrorTo(HttpExchange exchange) throws IOException {
 		String response = "500 - internal server error";
 		writeResponse(exchange, 500, "text/plain", response.getBytes());
 	}
+
 	private void respondOkTo(HttpExchange exchange) throws IOException {
 		exchange.getResponseHeaders().add("Content-type", "text/plain");
 		exchange.sendResponseHeaders(200, 0);
+		exchange.close();
 	}
 
 	private void writeResponse(HttpExchange exchange, int httpStatus, String contentType, byte response[])
@@ -119,30 +171,39 @@ public class FileServer implements HttpHandler {
 		os.flush();
 		os.close();
 		exchange.getResponseHeaders().add("Content-type", contentType);
+		exchange.close();
 	}
 
 	public static void main(String[] args) {
-		start();
+		if(args.length == 0) {
+			startServer();
+		} else {
+			try {
+				runScript(args[0]);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+
 	}
 
-	
-	public static void initScript() throws IOException {
+	public static void runScript(String filename) throws IOException {
+		ContextFactory.initGlobal(new AmberContextFactory());
 		Context ctx = Context.enter();
 		ctx.setOptimizationLevel(-1);
-		
-		String script = readFile("amber.js");
-		
-		ScriptableObject scope = ctx.initStandardObjects();
-		ctx.evaluateString(scope, "var CanvasRenderingContext2D = false;", "<cmd>", 1, null);
-		ctx.evaluateString(scope, "var isServer = true;", "<cmd>", 1, null);
-		ctx.evaluateString(scope, "var javaobjects = new java.util.HashMap();", "<cmd>", 1, null);
-		ctx.evaluateString(scope, script, "<cmd>", 1, null);
-//		String scriptFromFile = readFile("js/init.js");
-//		ctx.evaluateString(scope, scriptFromFile, "<cmd>", 1, null);
 
-//		ScriptableObject.putProperty(scope, "logger", logger);
+		String script = readFile(filename);
+
+		ScriptableObject scope = new ImporterTopLevel(ctx);
+		
+//		ScriptableObject scope = ctx.initStandardObjects();
+
+		Object o = ctx.evaluateString(scope, script, "<cmd>", 1, null);
+		System.out.println(o);
+
+		// ScriptableObject.putProperty(scope, "logger", logger);
 	}
-	
+
 	public static String readFile(String filename) throws FileNotFoundException, IOException {
 		File f = new File(filename);
 		FileInputStream fis = new FileInputStream(f);
@@ -151,23 +212,47 @@ public class FileServer implements HttpHandler {
 		String jsContent = new String(content, "UTF-8");
 		return jsContent;
 	}
-	
-	public static void start() {
+
+	public static void startServer() {
+		System.out.println("Trying to start an Amber-Server ...");
 		try {
-			System.setProperty("java.net.preferIPv6Addresses", "false");
-			_server = HttpServer.create(new InetSocketAddress(8080), 0);
-			_server.createContext("/", new FileServer());
-			_server.setExecutor(null); // creates a default executor
-			_server.start();
-			
-			initScript();
-			
+			 System.setProperty("java.net.preferIPv6Addresses", "false");
+			 _server = HttpServer.create(new InetSocketAddress(8080), 0);
+			 _server.createContext("/", new FileServer());
+			 _server.setExecutor(null); // creates a default executor
+			 _server.start();
+			 System.out.println("Server started, listening on Port 8080");
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
 	}
 
-	public static void stop() {
+	public static void stopServer() {
 		_server.stop(0);
+	}
+
+	public static class AmberContextFactory extends ContextFactory {
+		@Override
+		protected boolean hasFeature(Context cx, int featureIndex) {
+			switch (featureIndex) {
+			case Context.FEATURE_RESERVED_KEYWORD_AS_IDENTIFIER:
+				return true;
+			}
+
+			return super.hasFeature(cx, featureIndex);
+		}
+	}
+	
+	
+	public static class JavaFactory {
+		public Object createInstance(String className) {
+			Object obj = null;
+			try {
+				obj = Class.forName(className).newInstance();
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
+			return obj;
+		}
 	}
 }

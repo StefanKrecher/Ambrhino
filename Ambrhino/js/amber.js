@@ -73,7 +73,10 @@ amber = (function() {
 				'SUnit',
 				'Examples',
 				'Benchfib',
-				'Kernel-Tests'
+				'Kernel-Tests',
+				'CloudNodeClient',
+				'AmberServer',
+				'REPL'
 			]);
 		}
 
